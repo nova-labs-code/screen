@@ -1,7 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<script src="https://cdn.jsdelivr.net/npm/coi-serviceworker/coi-serviceworker.min.js"></script>
 <meta charset="UTF-8">
 <title>Capture Deck — Screen Recorder</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -428,7 +427,13 @@
       await ffmpeg.writeFile('input.webm', await fetchFile(webmBlob));
       await ffmpeg.exec(['-i', 'input.webm', '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23', '-pix_fmt', 'yuv420p', '-c:a', 'aac', 'output.mp4']);
       const data = await ffmpeg.readFile('output.mp4');
-      const mp4Blob = new Blob(resultMeta.textContent = fmt(elapsedBeforePause) + ' · ' + (mp4Blob.size/(1024*1024)).toFixed(1) + ' MB · mp4';
+      const mp4Blob = new Blob([data.buffer], { type: 'video/mp4' });
+      const url = URL.createObjectURL(mp4Blob);
+
+      downloadLink.href = url;
+      downloadLink.download = 'capture-' + new Date().toISOString().replace(/[:.]/g,'-') + '.mp4';
+      downloadLink.textContent = 'Download .mp4 (' + (mp4Blob.size/(1024*1024)).toFixed(1) + ' MB)';
+      resultMeta.textContent = fmt(elapsedBeforePause) + ' · ' + (mp4Blob.size/(1024*1024)).toFixed(1) + ' MB · mp4';
 
       convertLabel.textContent = 'Done.';
       progressFill.style.width = '100%';
