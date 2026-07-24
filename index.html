@@ -263,8 +263,40 @@
     padding:11px 18px;
     border-radius:8px;
     transition:background .15s ease;
+    white-space:nowrap;
   }
   a.download-link:hover{background:#4fe68f;}
+  a.download-link.mp4{background:var(--amber); color:#241800;}
+  a.download-link.mp4:hover{background:#ffc44d;}
+  .result-actions{
+    display:flex;
+    gap:10px;
+    flex-wrap:wrap;
+  }
+
+  .convert-row{
+    display:flex;
+    flex-direction:column;
+    gap:10px;
+  }
+  .convert-label{
+    font-family:var(--mono);
+    font-size:11.5px;
+    color:var(--text-dim);
+  }
+  .progress-track{
+    height:6px;
+    background:var(--panel-raised);
+    border:1px solid var(--line);
+    border-radius:4px;
+    overflow:hidden;
+  }
+  .progress-fill{
+    height:100%;
+    width:0%;
+    background:var(--amber);
+    transition:width .2s ease;
+  }
 
   footer{
     margin-top:22px;
@@ -334,11 +366,17 @@
 
   <div class="panel result" id="resultPanel">
     <div class="meta" id="resultMeta">Recording ready</div>
-    <a class="download-link" id="downloadLink" download="capture.webm">Download .webm</a>
+    <a class="download-link" id="downloadLink" download="capture.mp4">Download .mp4</a>
+  </div>
+  <div class="panel" id="convertPanel" style="display:none;">
+    <div class="convert-row">
+      <div class="convert-label" id="convertLabel">Loading converter…</div>
+      <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
+    </div>
   </div>
 
   <footer>
-    Uses getDisplayMedia + MediaRecorder. Recording is held in memory in this tab only — closing or refreshing the page discards it, so download before you leave. Window/tab/screen options above only set the browser's default suggestion; you can still pick a different source in the native picker.
+    Uses getDisplayMedia + MediaRecorder, then converts to MP4 in-browser via ffmpeg.wasm (loaded from a CDN on first use, cached after). Everything happens locally in this tab — closing or refreshing the page discards it, so download before you leave. Window/tab/screen options above only set the browser's default suggestion; you can still pick a different source in the native picker.
   </footer>
 
 </div>
@@ -357,6 +395,68 @@
   const resultPanel = document.getElementById('resultPanel');
   const resultMeta = document.getElementById('resultMeta');
   const downloadLink = document.getElementById('downloadLink');
+  const convertPanel = document.getElementById('convertPanel');
+  const convertLabel = document.getElementById('convertLabel');
+  const progressFill = document.getElementById('progressFill');
+
+  let ffmpegInstance = null;
+
+  async function getFFmpeg(){
+    if (ffmpegInstance) return ffmpegInstance;
+    const { FFmpeg } = await import('https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/esm/index.js');
+    const { toBlobURL } = await import('https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/esm/index.js');
+    const ffmpeg = new FFmpeg();
+    const base = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
+    ffmpeg.on('progress', ({ progress }) => {
+      const pct = Math.min(100, Math.max(0, Math.round(progress * 100)));
+      progressFill.style.width = pct + '%';
+      convertLabel.textContent = 'Converting… ' + pct + '%';
+    });
+    convertLabel.textContent = 'Loading converter (first time only)…';
+    await ffmpeg.load({
+      coreURL: await toBlobURL(base + '/ffmpeg-core.js', 'text/javascript'),
+      wasmURL: await toBlobURL(base + '/ffmpeg-core.wasm', 'application/wasm'),
+    });
+    ffmpegInstance = ffmpeg;
+    return ffmpeg;
+  }
+
+  async function convertToMp4(webmBlob){
+    convertPanel.style.display = 'block';
+    progressFill.style.width = '0%';
+    downloadLink.classList.add('mp4');
+    downloadLink.textContent = 'Converting…';
+    downloadLink.removeAttribute('href');
+
+    try {
+      const { fetchFile } = await import('https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/esm/index.js');
+      const ffmpeg = await getFFmpeg();
+      convertLabel.textContent = 'Converting…';
+      await ffmpeg.writeFile('input.webm', await fetchFile(webmBlob));
+      await ffmpeg.exec(['-i', 'input.webm', '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23', '-pix_fmt', 'yuv420p', '-c:a', 'aac', 'output.mp4']);
+      const data = await ffmpeg.readFile('output.mp4');
+      const mp4Blob = new Blob([data.buffer], { type: 'video/mp4' });
+      const url = URL.createObjectURL(mp4Blob);
+
+      downloadLink.href = url;
+      downloadLink.download = 'capture-' + new Date().toISOString().replace(/[:.]/g,'-') + '.mp4';
+      downloadLink.textContent = 'Download .mp4 (' + (mp4Blob.size/(1024*1024)).toFixed(1) + ' MB)';
+      resultMeta.textContent = fmt(elapsedBeforePause) + ' · ' + (mp4Blob.size/(1024*1024)).toFixed(1) + ' MB · mp4';
+
+      convertLabel.textContent = 'Done.';
+      progressFill.style.width = '100%';
+      setStatus('Converted. Ready to download.');
+    } catch (err){
+      // Fall back to the original webm so the recording is never stranded
+      const url = URL.createObjectURL(webmBlob);
+      downloadLink.classList.remove('mp4');
+      downloadLink.href = url;
+      downloadLink.download = 'capture-' + new Date().toISOString().replace(/[:.]/g,'-') + '.webm';
+      downloadLink.textContent = 'Download .webm (conversion failed)';
+      convertLabel.textContent = 'MP4 conversion failed, kept original: ' + err.message;
+      setStatus('MP4 conversion failed — original .webm is available instead.', true);
+    }
+  }
 
   let mediaRecorder = null;
   let displayStream = null;
@@ -423,6 +523,8 @@
   async function start(){
     setStatus('');
     resultPanel.classList.remove('show');
+    convertPanel.style.display = 'none';
+    downloadLink.classList.remove('mp4');
     recordedBlob = null;
 
     const surface = document.querySelector('input[name="surface"]:checked').value;
@@ -552,14 +654,11 @@
   function onRecorderStop(){
     const type = mediaRecorder.mimeType || 'video/webm';
     recordedBlob = new Blob(chunks, { type });
-    const url = URL.createObjectURL(recordedBlob);
     const sizeMB = (recordedBlob.size / (1024*1024)).toFixed(1);
-    downloadLink.href = url;
-    const ext = type.includes('mp4') ? 'mp4' : 'webm';
-    downloadLink.download = 'capture-' + new Date().toISOString().replace(/[:.]/g,'-') + '.' + ext;
-    resultMeta.textContent = fmt(elapsedBeforePause) + ' · ' + sizeMB + ' MB';
+    resultMeta.textContent = fmt(elapsedBeforePause) + ' · ' + sizeMB + ' MB (converting to mp4…)';
     resultPanel.classList.add('show');
-    setStatus('Done. Preview below still shows the last frame — download to save it.');
+    setStatus('Recording captured. Converting to MP4…');
+    convertToMp4(recordedBlob);
   }
 
   btnStart.addEventListener('click', start);
