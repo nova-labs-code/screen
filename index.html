@@ -1,7 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<script src="https://cdn.jsdelivr.net/npm/coi-serviceworker/coi-serviceworker.min.js"></script>
 <meta charset="UTF-8">
 <title>Capture Deck — Screen Recorder</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -263,32 +262,6 @@
     white-space:nowrap;
   }
   a.download-link:hover{background:#4fe68f;}
-  a.download-link.mp4{background:var(--amber); color:#241800;}
-  a.download-link.mp4:hover{background:#ffc44d;}
-
-  .convert-row{
-    display:flex;
-    flex-direction:column;
-    gap:10px;
-  }
-  .convert-label{
-    font-family:var(--mono);
-    font-size:11.5px;
-    color:var(--text-dim);
-  }
-  .progress-track{
-    height:6px;
-    background:var(--panel-raised);
-    border:1px solid var(--line);
-    border-radius:4px;
-    overflow:hidden;
-  }
-  .progress-fill{
-    height:100%;
-    width:0%;
-    background:var(--amber);
-    transition:width .2s ease;
-  }
 
   footer{
     margin-top:22px;
@@ -360,20 +333,12 @@
     <div class="meta" id="resultMeta">Recording ready</div>
     <a class="download-link" id="downloadLink" download="capture.mp4">Download .mp4</a>
   </div>
-  <div class="panel" id="convertPanel" style="display:none;">
-    <div class="convert-row">
-      <div class="convert-label" id="convertLabel">Loading converter…</div>
-      <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
-    </div>
-  </div>
 
   <footer>
-    Uses getDisplayMedia + MediaRecorder, then converts to MP4 in-browser via ffmpeg.wasm. Everything happens locally in this tab — closing or refreshing the page discards it, so download before you leave.
+    Uses getDisplayMedia + MediaRecorder. Everything happens locally in this tab — closing or refreshing the page discards it, so download before you leave.
   </footer>
 
 </div>
-
-<script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js"></script>
 
 <script>
 (() => {
@@ -389,77 +354,6 @@
   const resultPanel = document.getElementById('resultPanel');
   const resultMeta = document.getElementById('resultMeta');
   const downloadLink = document.getElementById('downloadLink');
-  const convertPanel = document.getElementById('convertPanel');
-  const convertLabel = document.getElementById('convertLabel');
-  const progressFill = document.getElementById('progressFill');
-
-  let ffmpegInstance = null;
-
-  async function getFFmpeg(){
-    if (ffmpegInstance) return ffmpegInstance;
-
-    const { createFFmpeg } = FFmpeg;
-    const ffmpeg = createFFmpeg({
-      log: false,
-      corePath: 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.11.0/dist/ffmpeg-core.js'
-    });
-
-    ffmpeg.setProgress(({ ratio }) => {
-      const pct = Math.min(100, Math.max(0, Math.round(ratio * 100)));
-      progressFill.style.width = pct + '%';
-      convertLabel.textContent = 'Converting… ' + pct + '%';
-    });
-
-    convertLabel.textContent = 'Loading converter (first time only)…';
-    await ffmpeg.load();
-    ffmpegInstance = ffmpeg;
-    return ffmpeg;
-  }
-
-  async function convertToMp4(webmBlob){
-    convertPanel.style.display = 'block';
-    progressFill.style.width = '0%';
-    downloadLink.classList.add('mp4');
-    downloadLink.textContent = 'Converting…';
-    downloadLink.removeAttribute('href');
-
-    try {
-      const ffmpeg = await getFFmpeg();
-      convertLabel.textContent = 'Converting…';
-
-      ffmpeg.FS('writeFile', 'input.webm', await FFmpeg.fetchFile(webmBlob));
-
-      await ffmpeg.run(
-        '-i', 'input.webm',
-        '-c:v', 'libx264',
-        '-preset', 'ultrafast',
-        '-crf', '23',
-        '-pix_fmt', 'yuv420p',
-        'output.mp4'
-      );
-
-      const data = ffmpeg.FS('readFile', 'output.mp4');
-      const mp4Blob = new Blob([data.buffer], { type: 'video/mp4' });
-      const url = URL.createObjectURL(mp4Blob);
-
-      downloadLink.href = url;
-      downloadLink.download = 'capture-' + new Date().toISOString().replace(/[:.]/g,'-') + '.mp4';
-      downloadLink.textContent = 'Download .mp4 (' + (mp4Blob.size/(1024*1024)).toFixed(1) + ' MB)';
-      resultMeta.textContent = fmt(elapsedBeforePause) + ' · ' + (mp4Blob.size/(1024*1024)).toFixed(1) + ' MB · mp4';
-
-      convertLabel.textContent = 'Done.';
-      progressFill.style.width = '100%';
-      setStatus('Converted. Ready to download.');
-    } catch (err){
-      const url = URL.createObjectURL(webmBlob);
-      downloadLink.classList.remove('mp4');
-      downloadLink.href = url;
-      downloadLink.download = 'capture-' + new Date().toISOString().replace(/[:.]/g,'-') + '.webm';
-      downloadLink.textContent = 'Download .webm (conversion failed)';
-      convertLabel.textContent = 'MP4 conversion failed, kept original: ' + err.message;
-      setStatus('MP4 conversion failed — original .webm is available instead.', true);
-    }
-  }
 
   let mediaRecorder = null;
   let displayStream = null;
@@ -469,7 +363,6 @@
   let startTime = 0;
   let elapsedBeforePause = 0;
   let timerInterval = null;
-  let recordedBlob = null;
 
   function setStatus(msg, isErr){
     statusEl.textContent = msg || '';
@@ -526,9 +419,6 @@
   async function start(){
     setStatus('');
     resultPanel.classList.remove('show');
-    convertPanel.style.display = 'none';
-    downloadLink.classList.remove('mp4');
-    recordedBlob = null;
 
     const surface = document.querySelector('input[name="surface"]:checked').value;
     const wantSystemAudio = document.getElementById('opt-system-audio').checked;
@@ -654,12 +544,19 @@
 
   function onRecorderStop(){
     const type = mediaRecorder.mimeType || 'video/webm';
-    recordedBlob = new Blob(chunks, { type });
+    const recordedBlob = new Blob(chunks, { type });
+    const url = URL.createObjectURL(recordedBlob);
+    
     const sizeMB = (recordedBlob.size / (1024*1024)).toFixed(1);
-    resultMeta.textContent = fmt(elapsedBeforePause) + ' · ' + sizeMB + ' MB (converting to mp4…)';
+    const fileName = 'capture-' + new Date().toISOString().replace(/[:.]/g,'-') + '.mp4';
+    
+    downloadLink.href = url;
+    downloadLink.download = fileName;
+    downloadLink.textContent = 'Download .mp4 (' + sizeMB + ' MB)';
+    
+    resultMeta.textContent = fmt(elapsedBeforePause) + ' · ' + sizeMB + ' MB';
     resultPanel.classList.add('show');
-    setStatus('Recording captured. Converting to MP4…');
-    convertToMp4(recordedBlob);
+    setStatus('Recording finished. Ready to download.');
   }
 
   btnStart.addEventListener('click', start);
